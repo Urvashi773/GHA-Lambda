@@ -1,17 +1,30 @@
 
-name: Deploy AWS Lambda
+name: Deploy AWS Lambda (Create-or-Update)
 
 on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+
+# ---- Configure your function here ----
+env:
+  FUNCTION_NAME: my-lambda-function      # <-- change to your function name
+  ROLE_NAME: lambda-exec-gha             # IAM role for Lambda execution (auto-created if missing)
+  RUNTIME: python3.11                    # e.g., python3.11 or nodejs18.x
+  HANDLER: app.lambda_handler            # e.g., app.lambda_handler or index.handler
+  ALIAS_NAME: prod                       # alias to point to the published version
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Using GitHub Secrets like the Medium article:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -21,47 +34,98 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ -f requirements.txt ]; then pip install --target . -r requirements.txt; fi
-          if [ -f package.json ]; then npm install; fi
+          if [ -f requirements.txt ]; then python -m pip install --target . -r requirements.txt; fi
+          if [ -f package.json ]; then npm ci; fi
 
-      - name: Zip Lambda function
-        run: zip -r function.zip .
+      - name: Build zip artifact
+        run: |
+          mkdir -p dist
+          zip -r dist/function.zip .
 
       - name: Create or Update Lambda
+        shell: bash
         run: |
-          FUNCTION_NAME="my-lambda-function"
-          ROLE_NAME="lambda-exec-gha"
+          set -euo pipefail
+
+          FUNCTION_NAME="${{ env.FUNCTION_NAME }}"
+          ROLE_NAME="${{ env.ROLE_NAME }}"
+          RUNTIME="${{ env.RUNTIME }}"
+          HANDLER="${{ env.HANDLER }}"
+
+          # Discover account id and role arn
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME"
 
-          # Create role if missing
-          if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-            echo "Creating IAM role..."
-            cat > trust.json << 'EOF'
-            {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Effect": "Allow",
-                  "Principal": { "Service": "lambda.amazonaws.com" },
-                  "Action": "sts:AssumeRole"
-                }
-              ]
-            }
-            EOF
-            aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document file://trust.json
-            aws iam attach-role-policy --role-name "$ROLE_NAME" --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-          fi
-
-          # Create Lambda if missing, else update
-          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
-            echo "Updating Lambda code..."
-            aws lambda update-function-code --function-name "$FUNCTION_NAME" --zip-file fileb://function.zip
+          echo "Ensuring IAM role: $ROLE_NAME"
+          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "IAM role $ROLE_NAME already exists."
           else
-                         --function-name "$FUNCTION_NAME" \
-              --runtime python3.11 \
-              --role "$ROLE_ARN" \
-              --handler app.lambda_handler \
-              --zip-file fileb://function.zip
+            echo "Creating IAM role $ROLE_NAME ..."
+cat > trust.json <<'JSON'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "lambda.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+JSON
+            aws iam create-role \
+              --role-name "$ROLE_NAME" \
+              --assume-role-policy-document file://trust.json \
+              --description "Lambda execution role for GitHub Actions deployments"
+
+            aws iam attach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
           fi
 
+          echo "Creating or updating Lambda: $FUNCTION_NAME"
+          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            echo "Updating function code ..."
+            aws lambda update-function-code \
+              --function-name "$FUNCTION_NAME" \
+              --zip-file fileb://dist/function.zip
+          else
+            echo "Creating function ..."
+            aws lambda create-function \
+              --function-name "$FUNCTION_NAME" \
+              --runtime "$RUNTIME" \
+              --role "$ROLE_ARN" \
+              --handler "$HANDLER" \
+              --zip-file fileb://dist/function.zip \
+              --architectures x86_64
+          fi
+
+      - name: Publish version
+        id: publish
+        run: |
+          VERSION=$(aws lambda publish-version --function-name "${{ env.FUNCTION_NAME }}" --query Version --output text)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Published version: $VERSION"
+
+      - name: Create or Update alias
+        run: |
+          FN="${{ env.FUNCTION_NAME }}"
+          ALIAS="${{ env.ALIAS_NAME }}"
+          VER="${{ steps.publish.outputs.version }}"
+          if aws lambda get-alias --function-name "$FN" --name "$ALIAS" >/dev/null 2>&1; then
+            echo "Updating alias $ALIAS -> version $VER"
+            aws lambda update-alias --function-name "$FN" --name "$ALIAS" --function-version "$VER"
+          else
+            echo "Creating alias $ALIAS -> version $VER"
+            aws lambda create-alias --function-name "$FN" --name "$ALIAS" --function-version "$VER"
+          fi
+
+      # Optional: Canary rollout example (uncomment to send 10% to previous version)
+      # - name: Canary routing (10% to previous version)
+      #   run: |
+      #     PREV_VER=$(aws lambda list-versions-by-function --function-name "${{ env.FUNCTION_NAME }}" --query 'Versions[?Version!=`$LATEST`][-1].Version' --output text)
+      #     echo "Setting alias routing: 10% to previous version $PREV_VER"
+      #     aws lambda update-alias \
+      #       --function-name "${{ env.FUNCTION_NAME }}" \
+      #       --name "${{ env.ALIAS_NAME }}" \
+      #       --routing-config "AdditionalVersionWeights={\"$PREV_VER\":0.1}"
