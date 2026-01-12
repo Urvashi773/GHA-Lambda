@@ -1,1 +1,67 @@
 
+name: Deploy AWS Lambda
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install --target . -r requirements.txt; fi
+          if [ -f package.json ]; then npm install; fi
+
+      - name: Zip Lambda function
+        run: zip -r function.zip .
+
+      - name: Create or Update Lambda
+        run: |
+          FUNCTION_NAME="my-lambda-function"
+          ROLE_NAME="lambda-exec-gha"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME"
+
+          # Create role if missing
+          if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "Creating IAM role..."
+            cat > trust.json << 'EOF'
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Service": "lambda.amazonaws.com" },
+                  "Action": "sts:AssumeRole"
+                }
+              ]
+            }
+            EOF
+            aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document file://trust.json
+            aws iam attach-role-policy --role-name "$ROLE_NAME" --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          fi
+
+          # Create Lambda if missing, else update
+          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            echo "Updating Lambda code..."
+            aws lambda update-function-code --function-name "$FUNCTION_NAME" --zip-file fileb://function.zip
+          else
+                         --function-name "$FUNCTION_NAME" \
+              --runtime python3.11 \
+              --role "$ROLE_ARN" \
+              --handler app.lambda_handler \
+              --zip-file fileb://function.zip
+          fi
+
