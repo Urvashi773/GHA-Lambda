@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 env:
-  FUNCTION_NAME: my-lambda-function      # change if you want another name
-  ROLE_NAME: lambda-exec-gha             # auto-created if missing
-  RUNTIME: python3.11                    # Python runtime
-  HANDLER: app.lambda_handler            # matches app.py lambda_handler
-  ALIAS_NAME: prod                       # alias pointed to latest published version
+  FUNCTION_NAME: my-lambda-function      # change if needed
+  ROLE_NAME: lambda-exec-gha             # IAM role auto-created if missing
+  RUNTIME: python3.11                    # python3.11 or nodejs18.x
+  HANDLER: app.lambda_handler            # app.lambda_handler or index.handler
+  ALIAS_NAME: prod                       # alias to point to published version
 
 jobs:
   deploy:
@@ -23,7 +23,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (Secrets)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -50,7 +50,8 @@ jobs:
           RUNTIME="${{ env.RUNTIME }}"
           HANDLER="${{ env.HANDLER }}"
 
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          # Discover account id and role arn
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
           ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME"
 
           echo "Ensuring IAM role: $ROLE_NAME"
@@ -58,18 +59,19 @@ jobs:
             echo "IAM role $ROLE_NAME already exists."
           else
             echo "Creating IAM role $ROLE_NAME ..."
-cat > trust.json <<'JSON'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": { "Service": "lambda.amazonaws.com" },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-JSON
+            # Write trust policy without here-doc to avoid YAML parser issues
+            printf '%s\n' \
+            '{' \
+            '  "Version": "2012-10-17",' \
+            '  "Statement": [' \
+            '    {' \
+            '      "Effect": "Allow",' \
+            '      "Principal": { "Service": "lambda.amazonaws.com" },' \
+            '      "Action": "sts:AssumeRole"' \
+            '    }' \
+            '  ]' \
+            '}' > trust.json
+
             aws iam create-role \
               --role-name "$ROLE_NAME" \
               --assume-role-policy-document file://trust.json \
