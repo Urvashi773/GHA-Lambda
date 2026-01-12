@@ -8,13 +8,12 @@ on:
 permissions:
   contents: read
 
-# ---- Configure your function here ----
 env:
-  FUNCTION_NAME: my-lambda-function      # <-- change to your function name
-  ROLE_NAME: lambda-exec-gha             # IAM role for Lambda execution (auto-created if missing)
-  RUNTIME: python3.11                    # e.g., python3.11 or nodejs18.x
-  HANDLER: app.lambda_handler            # e.g., app.lambda_handler or index.handler
-  ALIAS_NAME: prod                       # alias to point to the published version
+  FUNCTION_NAME: my-lambda-function      # change if you want another name
+  ROLE_NAME: lambda-exec-gha             # auto-created if missing
+  RUNTIME: python3.11                    # Python runtime
+  HANDLER: app.lambda_handler            # matches app.py lambda_handler
+  ALIAS_NAME: prod                       # alias pointed to latest published version
 
 jobs:
   deploy:
@@ -24,7 +23,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Using GitHub Secrets like the Medium article:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -52,7 +50,6 @@ jobs:
           RUNTIME="${{ env.RUNTIME }}"
           HANDLER="${{ env.HANDLER }}"
 
-          # Discover account id and role arn
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME"
 
@@ -120,7 +117,7 @@ JSON
             aws lambda create-alias --function-name "$FN" --name "$ALIAS" --function-version "$VER"
           fi
 
-      # Optional: Canary rollout example (uncomment to send 10% to previous version)
+      # Optional: Canary rollout (uncomment to send 10% to previous version)
       # - name: Canary routing (10% to previous version)
       #   run: |
       #     PREV_VER=$(aws lambda list-versions-by-function --function-name "${{ env.FUNCTION_NAME }}" --query 'Versions[?Version!=`$LATEST`][-1].Version' --output text)
