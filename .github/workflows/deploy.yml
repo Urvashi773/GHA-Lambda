@@ -1,95 +1,322 @@
-name: Deploy AWS Lambda (Update Existing Function)
+name: Deploy AWS Lambda - Production Ready
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
+  id-token: write
 
 env:
-  FUNCTION_NAME: GHA-Lambda     # EXACT name from your ARN
-  ALIAS_NAME: prod              # alias we maintain
+  FUNCTION_NAME: GHA-Lambda
+  PYTHON_VERSION: '3.14'
 
 jobs:
-  deploy:
+  # ============================================================
+  # JOB 1: Security & Quality Checks
+  # ============================================================
+  security:
+    name: Security & Code Quality
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install security tools
+        run: |
+          pip install bandit pylint
+        continue-on-error: true
+
+      - name: Security scan with Bandit
+        run: |
+          echo "🔍 Scanning for security vulnerabilities..."
+          bandit -r . -ll || echo "⚠️ Security warnings found (non-blocking)"
+        continue-on-error: true
+
+      - name: Lint code
+        run: |
+          echo "🔍 Linting Python code..."
+          pylint app.py --fail-under=7.0 || echo "⚠️ Linting warnings (non-blocking)"
+        continue-on-error: true
+
+  # ============================================================
+  # JOB 2: Build Lambda Package
+  # ============================================================
+  build:
+    name: Build Lambda Package
+    runs-on: ubuntu-latest
+    needs: security
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies (if exists)
+        run: |
+          mkdir -p package
+          if [ -f requirements.txt ]; then
+            echo "📦 Installing dependencies..."
+            pip install --target ./package -r requirements.txt
+            echo "✅ Dependencies installed"
+          else
+            echo "ℹ️ No requirements.txt found - skipping dependencies"
+          fi
+
+      - name: Create Lambda deployment package
+        run: |
+          mkdir -p dist
+          
+          # Package dependencies first (if they exist)
+          if [ -d "package" ] && [ "$(ls -A package)" ]; then
+            echo "📦 Packaging dependencies..."
+            cd package
+            zip -r ../dist/function.zip . -x '*.pyc' -x '*__pycache__*'
+            cd ..
+            echo "✅ Dependencies packaged"
+          fi
+          
+          # Add Lambda handler
+          echo "📦 Adding Lambda handler (app.py)..."
+          zip -g dist/function.zip app.py
+          
+          # Verify package
+          echo ""
+          echo "📊 Package details:"
+          ls -lh dist/function.zip
+          echo ""
+          echo "📄 Package contents (first 15 files):"
+          unzip -l dist/function.zip | head -20
+          
+          echo "✅ Lambda package created successfully"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package-${{ github.sha }}
+          path: dist/function.zip
+          retention-days: 30
+
+  # ============================================================
+  # JOB 3: Deploy to AWS Lambda
+  # ============================================================
+  deploy:
+    name: Deploy to Lambda
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: production
+      url: https://${{ secrets.AWS_REGION }}.console.aws.amazon.com/lambda/home?region=${{ secrets.AWS_REGION }}#/functions/${{ env.FUNCTION_NAME }}
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package-${{ github.sha }}
+          path: dist
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}   # must be eu-north-1
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Show AWS account and region
+      - name: Verify AWS identity
         run: |
-          REGION="${{ secrets.AWS_REGION }}"
-          echo "Region from secret: $REGION"
-          echo "Caller identity (account should be 542834090568):"
-          aws sts get-caller-identity --region "$REGION"
+          echo "🔐 Verifying AWS credentials..."
+          aws sts get-caller-identity
+          echo ""
+          echo "📍 Deploying to region: ${{ secrets.AWS_REGION }}"
 
-      - name: Install dependencies (optional)
+      - name: Get current version (for rollback)
+        id: current-version
         run: |
-          if [ -f requirements.txt ]; then python -m pip install --target . -r requirements.txt; fi
-          if [ -f package.json ]; then npm ci; fi
-
-      - name: Build zip artifact
-        run: |
-          mkdir -p dist
-          zip -r dist/function.zip .
-
-      - name: List functions in region
-        run: |
-          REGION="${{ secrets.AWS_REGION }}"
-          echo "Functions in $REGION:"
-          aws lambda list-functions --region "$REGION" --query 'Functions[].FunctionName'
+          if aws lambda get-alias \
+            --function-name "${{ env.FUNCTION_NAME }}" \
+            --name "prod" \
+            --region "${{ secrets.AWS_REGION }}" >/dev/null 2>&1; then
+            
+            CURRENT_VERSION=$(aws lambda get-alias \
+              --function-name "${{ env.FUNCTION_NAME }}" \
+              --name "prod" \
+              --region "${{ secrets.AWS_REGION }}" \
+              --query 'FunctionVersion' \
+              --output text)
+            
+            echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "📌 Current prod version: $CURRENT_VERSION"
+          else
+            echo "ℹ️ No existing prod alias found"
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Update Lambda function code
         run: |
-          REGION="${{ secrets.AWS_REGION }}"
+          echo "🚀 Updating Lambda function code..."
           aws lambda update-function-code \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --zip-file fileb://dist/function.zip \
-            --region "$REGION"
+            --region "${{ secrets.AWS_REGION }}" \
+            --output json > update-output.json
+          
+          cat update-output.json
+          echo "✅ Function code updated"
 
-      - name: Publish version
+      - name: Wait for function to be ready
+        run: |
+          echo "⏳ Waiting for function update to complete..."
+          aws lambda wait function-updated \
+            --function-name "${{ env.FUNCTION_NAME }}" \
+            --region "${{ secrets.AWS_REGION }}"
+          echo "✅ Function is ready"
+
+      - name: Publish new version
         id: publish
         run: |
-          REGION="${{ secrets.AWS_REGION }}"
+          echo "📦 Publishing new version..."
           VERSION=$(aws lambda publish-version \
             --function-name "${{ env.FUNCTION_NAME }}" \
-            --query Version --output text \
-            --region "$REGION")
+            --description "GitHub Actions deployment - Commit: ${{ github.sha }}" \
+            --region "${{ secrets.AWS_REGION }}" \
+            --query 'Version' \
+            --output text)
+          
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Published version: $VERSION"
+          echo "✅ Published version: $VERSION"
 
-      - name: Create or Update alias
+      - name: Smoke test - Invoke function
+        id: smoke-test
         run: |
-          REGION="${{ secrets.AWS_REGION }}"
-          FN="${{ env.FUNCTION_NAME }}"
-          ALIAS="${{ env.ALIAS_NAME }}"
-          VER="${{ steps.publish.outputs.version }}"
-          if aws lambda get-alias --function-name "$FN" --name "$ALIAS" --region "$REGION" >/dev/null 2>&1; then
-            echo "Updating alias $ALIAS -> version $VER"
-            aws lambda update-alias --function-name "$FN" --name "$ALIAS" --function-version "$VER" --region "$REGION"
-          else
-            echo "Creating alias $ALIAS -> version $VER"
-            aws lambda create-alias --function-name "$FN" --name "$ALIAS" --function-version "$VER" --region "$REGION"
+          echo "🧪 Running smoke test..."
+          
+          aws lambda invoke \
+            --function-name "${{ env.FUNCTION_NAME }}" \
+            --qualifier "${{ steps.publish.outputs.version }}" \
+            --payload '{"test": true, "source": "github-actions"}' \
+            --region "${{ secrets.AWS_REGION }}" \
+            --log-type Tail \
+            response.json \
+            --query 'LogResult' \
+            --output text | base64 -d || true
+          
+          echo ""
+          echo "📄 Lambda response:"
+          cat response.json
+          echo ""
+          
+          # Check for errors
+          if grep -q "errorMessage" response.json; then
+            echo "❌ Smoke test FAILED - Function returned an error"
+            exit 1
           fi
+          
+          echo "✅ Smoke test PASSED"
 
-      # Optional: smoke test to ensure alias invokes fine
-      # - name: Smoke test invoke (via alias)
-      #   run: |
-      #     REGION="${{ secrets.AWS_REGION }}"
-      #     aws lambda invoke \
-      #       --function-name "${{ env.FUNCTION_NAME }}" \
-      #       --qualifier "${{ env.ALIAS_NAME }}" \
-      #       --payload '{}' \
-      #       --region "$REGION" \
-      #       response.json
-      #     cat response.json
+      - name: Update prod alias
+        run: |
+          FUNCTION_NAME="${{ env.FUNCTION_NAME }}"
+          VERSION="${{ steps.publish.outputs.version }}"
+          REGION="${{ secrets.AWS_REGION }}"
+          
+          if aws lambda get-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name "prod" \
+            --region "$REGION" >/dev/null 2>&1; then
+            
+            echo "🔄 Updating prod alias → Version $VERSION"
+            aws lambda update-alias \
+              --function-name "$FUNCTION_NAME" \
+              --name "prod" \
+              --function-version "$VERSION" \
+              --description "Updated by GitHub Actions - $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
+              --region "$REGION"
+          else
+            echo "➕ Creating prod alias → Version $VERSION"
+            aws lambda create-alias \
+              --function-name "$FUNCTION_NAME" \
+              --name "prod" \
+              --function-version "$VERSION" \
+              --description "Created by GitHub Actions - $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
+              --region "$REGION"
+          fi
+          
+          echo "✅ Prod alias updated successfully"
+
+      - name: Final smoke test on prod alias
+        run: |
+          echo "🧪 Testing prod alias..."
+          
+          aws lambda invoke \
+            --function-name "${{ env.FUNCTION_NAME }}:prod" \
+            --payload '{"test": true, "environment": "prod"}' \
+            --region "${{ secrets.AWS_REGION }}" \
+            response-prod.json
+          
+          cat response-prod.json
+          
+          if grep -q "errorMessage" response-prod.json; then
+            echo "❌ Prod alias test FAILED"
+            exit 1
+          fi
+          
+          echo "✅ Prod alias working correctly"
+
+      - name: Rollback on failure
+        if: failure() && steps.current-version.outputs.version != ''
+        run: |
+          echo "⚠️ DEPLOYMENT FAILED - Initiating rollback..."
+          echo "Rolling back to version: ${{ steps.current-version.outputs.version }}"
+          
+          aws lambda update-alias \
+            --function-name "${{ env.FUNCTION_NAME }}" \
+            --name "prod" \
+            --function-version "${{ steps.current-version.outputs.version }}" \
+            --description "ROLLED BACK by GitHub Actions due to deployment failure" \
+            --region "${{ secrets.AWS_REGION }}"
+          
+          echo "✅ Rollback completed - prod alias restored to version ${{ steps.current-version.outputs.version }}"
+
+      - name: Create deployment summary
+        if: success()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🚀 Lambda Deployment Successful
+          
+          | Property | Value |
+          |----------|-------|
+          | **Function** | \`${{ env.FUNCTION_NAME }}\` |
+          | **Region** | \`${{ secrets.AWS_REGION }}\` |
+          | **New Version** | \`${{ steps.publish.outputs.version }}\` |
+          | **Previous Version** | \`${{ steps.current-version.outputs.version || 'N/A' }}\` |
+          | **Alias** | \`prod\` |
+          | **Commit** | \`${{ github.sha }}\` |
+          | **Branch** | \`${{ github.ref_name }}\` |
+          | **Deployed by** | \`${{ github.actor }}\` |
+          | **Timestamp** | $(date -u +"%Y-%m-%d %H:%M:%S UTC") |
+          
+          ### ✅ Status
+          - Security scan: Completed
+          - Build: Successful
+          - Smoke tests: **PASSED**
+          - Deployment: **SUCCESSFUL**
+          
+          ### 🔗 Quick Links
+          - [Lambda Console](https://${{ secrets.AWS_REGION }}.console.aws.amazon.com/lambda/home?region=${{ secrets.AWS_REGION }}#/functions/${{ env.FUNCTION_NAME }})
+          - [CloudWatch Logs](https://${{ secrets.AWS_REGION }}.console.aws.amazon.com/cloudwatch/home?region=${{ secrets.AWS_REGION }}#logsV2:log-groups/log-group/\$252Faws\$252Flambda\$252F${{ env.FUNCTION_NAME }})
+          EOF
