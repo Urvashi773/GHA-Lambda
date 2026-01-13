@@ -41,14 +41,14 @@ jobs:
 
       - name: Security scan with Bandit
         run: |
-          echo "🔍 Scanning for security vulnerabilities..."
-          bandit -r . -ll || echo "⚠️ Security warnings found (non-blocking)"
+          echo "Scanning for security vulnerabilities..."
+          bandit -r . -ll || echo "Security warnings found (non-blocking)"
         continue-on-error: true
 
       - name: Lint code
         run: |
-          echo "🔍 Linting Python code..."
-          pylint app.py --fail-under=7.0 || echo "⚠️ Linting warnings (non-blocking)"
+          echo "Linting Python code..."
+          pylint app.py --fail-under=7.0 || echo "Linting warnings (non-blocking)"
         continue-on-error: true
 
   # ============================================================
@@ -71,11 +71,11 @@ jobs:
         run: |
           mkdir -p package
           if [ -f requirements.txt ]; then
-            echo "📦 Installing dependencies..."
+            echo "Installing dependencies..."
             pip install --target ./package -r requirements.txt
-            echo "✅ Dependencies installed"
+            echo "Dependencies installed"
           else
-            echo "ℹ️ No requirements.txt found - skipping dependencies"
+            echo "No requirements.txt found - skipping dependencies"
           fi
 
       - name: Create Lambda deployment package
@@ -84,26 +84,26 @@ jobs:
           
           # Package dependencies first (if they exist)
           if [ -d "package" ] && [ "$(ls -A package)" ]; then
-            echo "📦 Packaging dependencies..."
+            echo "Packaging dependencies..."
             cd package
             zip -r ../dist/function.zip . -x '*.pyc' -x '*__pycache__*'
             cd ..
-            echo "✅ Dependencies packaged"
+            echo "Dependencies packaged"
           fi
           
           # Add Lambda handler
-          echo "📦 Adding Lambda handler (app.py)..."
+          echo "Adding Lambda handler (app.py)..."
           zip -g dist/function.zip app.py
           
           # Verify package
           echo ""
-          echo "📊 Package details:"
+          echo "Package details:"
           ls -lh dist/function.zip
           echo ""
-          echo "📄 Package contents (first 15 files):"
+          echo "Package contents (first 15 files):"
           unzip -l dist/function.zip | head -20
           
-          echo "✅ Lambda package created successfully"
+          echo "Lambda package created successfully"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -135,10 +135,10 @@ jobs:
 
       - name: Verify AWS identity
         run: |
-          echo "🔐 Verifying AWS credentials..."
+          echo "Verifying AWS credentials..."
           aws sts get-caller-identity
           echo ""
-          echo "📍 Deploying to region: ${{ env.AWS_REGION }}"
+          echo "Deploying to region: ${{ env.AWS_REGION }}"
 
       - name: Get current version (for rollback)
         id: current-version
@@ -156,15 +156,15 @@ jobs:
               --output text)
             
             echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "📌 Current prod version: $CURRENT_VERSION"
+            echo "Current prod version: $CURRENT_VERSION"
           else
-            echo "ℹ️ No existing prod alias found"
+            echo "No existing prod alias found"
             echo "version=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Update Lambda function code
         run: |
-          echo "🚀 Updating Lambda function code..."
+          echo "Updating Lambda function code..."
           aws lambda update-function-code \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --zip-file fileb://dist/function.zip \
@@ -172,20 +172,20 @@ jobs:
             --output json > update-output.json
           
           cat update-output.json
-          echo "✅ Function code updated"
+          echo "Function code updated"
 
       - name: Wait for function to be ready
         run: |
-          echo "⏳ Waiting for function update to complete..."
+          echo "Waiting for function update to complete..."
           aws lambda wait function-updated \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --region "${{ env.AWS_REGION }}"
-          echo "✅ Function is ready"
+          echo "Function is ready"
 
       - name: Publish new version
         id: publish
         run: |
-          echo "📦 Publishing new version..."
+          echo "Publishing new version..."
           VERSION=$(aws lambda publish-version \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --description "GitHub Actions deployment - Commit: ${{ github.sha }}" \
@@ -194,12 +194,12 @@ jobs:
             --output text)
           
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "✅ Published version: $VERSION"
+          echo "Published version: $VERSION"
 
       - name: Smoke test - Invoke function
         id: smoke-test
         run: |
-          echo "🧪 Running smoke test..."
+          echo "Running smoke test..."
           
           # Invoke Lambda with inline JSON (simpler approach)
           aws lambda invoke \
@@ -211,18 +211,18 @@ jobs:
             response.json
           
           echo ""
-          echo "📄 Lambda response:"
+          echo "Lambda response:"
           cat response.json
           echo ""
           
           # Check for errors
           if grep -q "errorMessage" response.json; then
-            echo "❌ Smoke test FAILED - Function returned an error"
+            echo "Smoke test FAILED - Function returned an error"
             cat response.json
             exit 1
           fi
           
-          echo "✅ Smoke test PASSED"
+          echo "Smoke test PASSED"
 
       - name: Update prod alias
         run: |
@@ -235,7 +235,7 @@ jobs:
             --name "prod" \
             --region "$REGION" >/dev/null 2>&1; then
             
-            echo "🔄 Updating prod alias → Version $VERSION"
+            echo "Updating prod alias to version $VERSION"
             aws lambda update-alias \
               --function-name "$FUNCTION_NAME" \
               --name "prod" \
@@ -243,7 +243,7 @@ jobs:
               --description "Updated by GitHub Actions - $(date -u +"%Y-%m-%d %H:%M:%S UTC")" \
               --region "$REGION"
           else
-            echo "➕ Creating prod alias → Version $VERSION"
+            echo "Creating prod alias for version $VERSION"
             aws lambda create-alias \
               --function-name "$FUNCTION_NAME" \
               --name "prod" \
@@ -252,11 +252,11 @@ jobs:
               --region "$REGION"
           fi
           
-          echo "✅ Prod alias updated successfully"
+          echo "Prod alias updated successfully"
 
       - name: Final smoke test on prod alias
         run: |
-          echo "🧪 Testing prod alias..."
+          echo "Testing prod alias..."
           
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}:prod" \
@@ -266,21 +266,21 @@ jobs:
             response-prod.json
           
           echo ""
-          echo "📄 Prod alias response:"
+          echo "Prod alias response:"
           cat response-prod.json
           echo ""
           
           if grep -q "errorMessage" response-prod.json; then
-            echo "❌ Prod alias test FAILED"
+            echo "Prod alias test FAILED"
             exit 1
           fi
           
-          echo "✅ Prod alias working correctly"
+          echo "Prod alias working correctly"
 
       - name: Rollback on failure
         if: failure() && steps.current-version.outputs.version != ''
         run: |
-          echo "⚠️ DEPLOYMENT FAILED - Initiating rollback..."
+          echo "DEPLOYMENT FAILED - Initiating rollback..."
           echo "Rolling back to version: ${{ steps.current-version.outputs.version }}"
           
           aws lambda update-alias \
@@ -290,13 +290,13 @@ jobs:
             --description "ROLLED BACK by GitHub Actions due to deployment failure" \
             --region "${{ env.AWS_REGION }}"
           
-          echo "✅ Rollback completed - prod alias restored to version ${{ steps.current-version.outputs.version }}"
+          echo "Rollback completed - prod alias restored to version ${{ steps.current-version.outputs.version }}"
 
       - name: Create deployment summary
         if: success()
         run: |
           cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## 🚀 Lambda Deployment Successful
+          ## Lambda Deployment Successful
           
           | Property | Value |
           |----------|-------|
@@ -310,13 +310,13 @@ jobs:
           | **Deployed by** | \`${{ github.actor }}\` |
           | **Timestamp** | $(date -u +"%Y-%m-%d %H:%M:%S UTC") |
           
-          ### ✅ Status
+          ### Status
           - Security scan: Completed
           - Build: Successful
-          - Smoke tests: **PASSED**
-          - Deployment: **SUCCESSFUL**
+          - Smoke tests: PASSED
+          - Deployment: SUCCESSFUL
           
-          ### 🔗 Quick Links
+          ### Quick Links
           - [Lambda Console](https://${{ env.AWS_REGION }}.console.aws.amazon.com/lambda/home?region=${{ env.AWS_REGION }}#/functions/${{ env.FUNCTION_NAME }})
           - [CloudWatch Logs](https://${{ env.AWS_REGION }}.console.aws.amazon.com/cloudwatch/home?region=${{ env.AWS_REGION }}#logsV2:log-groups/log-group/\$252Faws\$252Flambda\$252F${{ env.FUNCTION_NAME }})
           EOF
