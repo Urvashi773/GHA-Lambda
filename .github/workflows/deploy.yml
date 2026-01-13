@@ -16,6 +16,7 @@ permissions:
 env:
   FUNCTION_NAME: GHA-Lambda
   PYTHON_VERSION: '3.14'
+  AWS_REGION: ${{ secrets.AWS_REGION }}
 
 jobs:
   # ============================================================
@@ -120,9 +121,6 @@ jobs:
     name: Deploy to Lambda
     runs-on: ubuntu-latest
     needs: build
-    environment:
-      name: production
-      url: https://${{ secrets.AWS_REGION }}.console.aws.amazon.com/lambda/home?region=${{ secrets.AWS_REGION }}#/functions/${{ env.FUNCTION_NAME }}
     steps:
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -135,14 +133,14 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
         run: |
           echo "🔐 Verifying AWS credentials..."
           aws sts get-caller-identity
           echo ""
-          echo "📍 Deploying to region: ${{ secrets.AWS_REGION }}"
+          echo "📍 Deploying to region: ${{ env.AWS_REGION }}"
 
       - name: Get current version (for rollback)
         id: current-version
@@ -150,12 +148,12 @@ jobs:
           if aws lambda get-alias \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --name "prod" \
-            --region "${{ secrets.AWS_REGION }}" >/dev/null 2>&1; then
+            --region "${{ env.AWS_REGION }}" >/dev/null 2>&1; then
             
             CURRENT_VERSION=$(aws lambda get-alias \
               --function-name "${{ env.FUNCTION_NAME }}" \
               --name "prod" \
-              --region "${{ secrets.AWS_REGION }}" \
+              --region "${{ env.AWS_REGION }}" \
               --query 'FunctionVersion' \
               --output text)
             
@@ -172,7 +170,7 @@ jobs:
           aws lambda update-function-code \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --zip-file fileb://dist/function.zip \
-            --region "${{ secrets.AWS_REGION }}" \
+            --region "${{ env.AWS_REGION }}" \
             --output json > update-output.json
           
           cat update-output.json
@@ -183,7 +181,7 @@ jobs:
           echo "⏳ Waiting for function update to complete..."
           aws lambda wait function-updated \
             --function-name "${{ env.FUNCTION_NAME }}" \
-            --region "${{ secrets.AWS_REGION }}"
+            --region "${{ env.AWS_REGION }}"
           echo "✅ Function is ready"
 
       - name: Publish new version
@@ -193,7 +191,7 @@ jobs:
           VERSION=$(aws lambda publish-version \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --description "GitHub Actions deployment - Commit: ${{ github.sha }}" \
-            --region "${{ secrets.AWS_REGION }}" \
+            --region "${{ env.AWS_REGION }}" \
             --query 'Version' \
             --output text)
           
@@ -209,7 +207,7 @@ jobs:
             --function-name "${{ env.FUNCTION_NAME }}" \
             --qualifier "${{ steps.publish.outputs.version }}" \
             --payload '{"test": true, "source": "github-actions"}' \
-            --region "${{ secrets.AWS_REGION }}" \
+            --region "${{ env.AWS_REGION }}" \
             --log-type Tail \
             response.json \
             --query 'LogResult' \
@@ -232,7 +230,7 @@ jobs:
         run: |
           FUNCTION_NAME="${{ env.FUNCTION_NAME }}"
           VERSION="${{ steps.publish.outputs.version }}"
-          REGION="${{ secrets.AWS_REGION }}"
+          REGION="${{ env.AWS_REGION }}"
           
           if aws lambda get-alias \
             --function-name "$FUNCTION_NAME" \
@@ -265,7 +263,7 @@ jobs:
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}:prod" \
             --payload '{"test": true, "environment": "prod"}' \
-            --region "${{ secrets.AWS_REGION }}" \
+            --region "${{ env.AWS_REGION }}" \
             response-prod.json
           
           cat response-prod.json
@@ -288,7 +286,7 @@ jobs:
             --name "prod" \
             --function-version "${{ steps.current-version.outputs.version }}" \
             --description "ROLLED BACK by GitHub Actions due to deployment failure" \
-            --region "${{ secrets.AWS_REGION }}"
+            --region "${{ env.AWS_REGION }}"
           
           echo "✅ Rollback completed - prod alias restored to version ${{ steps.current-version.outputs.version }}"
 
@@ -301,7 +299,7 @@ jobs:
           | Property | Value |
           |----------|-------|
           | **Function** | \`${{ env.FUNCTION_NAME }}\` |
-          | **Region** | \`${{ secrets.AWS_REGION }}\` |
+          | **Region** | \`${{ env.AWS_REGION }}\` |
           | **New Version** | \`${{ steps.publish.outputs.version }}\` |
           | **Previous Version** | \`${{ steps.current-version.outputs.version || 'N/A' }}\` |
           | **Alias** | \`prod\` |
@@ -317,6 +315,6 @@ jobs:
           - Deployment: **SUCCESSFUL**
           
           ### 🔗 Quick Links
-          - [Lambda Console](https://${{ secrets.AWS_REGION }}.console.aws.amazon.com/lambda/home?region=${{ secrets.AWS_REGION }}#/functions/${{ env.FUNCTION_NAME }})
-          - [CloudWatch Logs](https://${{ secrets.AWS_REGION }}.console.aws.amazon.com/cloudwatch/home?region=${{ secrets.AWS_REGION }}#logsV2:log-groups/log-group/\$252Faws\$252Flambda\$252F${{ env.FUNCTION_NAME }})
+          - [Lambda Console](https://${{ env.AWS_REGION }}.console.aws.amazon.com/lambda/home?region=${{ env.AWS_REGION }}#/functions/${{ env.FUNCTION_NAME }})
+          - [CloudWatch Logs](https://${{ env.AWS_REGION }}.console.aws.amazon.com/cloudwatch/home?region=${{ env.AWS_REGION }}#logsV2:log-groups/log-group/\$252Faws\$252Flambda\$252F${{ env.FUNCTION_NAME }})
           EOF
