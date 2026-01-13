@@ -201,11 +201,14 @@ jobs:
         run: |
           echo "🧪 Running smoke test..."
           
+          # Create payload file
+          echo '{"test": true, "source": "github-actions"}' > payload.json
+          
           # Invoke Lambda and capture output
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --qualifier "${{ steps.publish.outputs.version }}" \
-            --payload '{"test": true, "source": "github-actions"}' \
+            --payload file://payload.json \
             --region "${{ env.AWS_REGION }}" \
             response.json
           
@@ -257,13 +260,19 @@ jobs:
         run: |
           echo "🧪 Testing prod alias..."
           
+          # Create payload file
+          echo '{"test": true, "environment": "prod"}' > payload-prod.json
+          
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}:prod" \
-            --payload '{"test": true, "environment": "prod"}' \
+            --payload file://payload-prod.json \
             --region "${{ env.AWS_REGION }}" \
             response-prod.json
           
+          echo ""
+          echo "📄 Prod alias response:"
           cat response-prod.json
+          echo ""
           
           if grep -q "errorMessage" response-prod.json; then
             echo "❌ Prod alias test FAILED"
