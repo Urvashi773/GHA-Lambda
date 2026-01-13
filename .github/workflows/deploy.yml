@@ -260,19 +260,13 @@ jobs:
         run: |
           echo "🧪 Testing prod alias..."
           
-          # Create payload file
-          echo '{"test": true, "environment": "prod"}' > payload-prod.json
-          
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}:prod" \
-            --payload file://payload-prod.json \
+            --payload '{"test": true, "environment": "prod"}' \
             --region "${{ env.AWS_REGION }}" \
             response-prod.json
           
-          echo ""
-          echo "📄 Prod alias response:"
           cat response-prod.json
-          echo ""
           
           if grep -q "errorMessage" response-prod.json; then
             echo "❌ Prod alias test FAILED"
