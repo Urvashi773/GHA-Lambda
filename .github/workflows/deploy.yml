@@ -201,14 +201,12 @@ jobs:
         run: |
           echo "🧪 Running smoke test..."
           
-          # Create payload file (without newline)
-          printf '{"test": true, "source": "github-actions"}' > payload.json
-          
-          # Invoke Lambda and capture output
+          # Invoke Lambda with inline JSON (simpler approach)
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --qualifier "${{ steps.publish.outputs.version }}" \
-            --payload file://payload.json \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
             --region "${{ env.AWS_REGION }}" \
             response.json
           
@@ -260,12 +258,10 @@ jobs:
         run: |
           echo "🧪 Testing prod alias..."
           
-          # Create payload file (without newline)
-          printf '{"test": true, "environment": "prod"}' > payload-prod.json
-          
           aws lambda invoke \
             --function-name "${{ env.FUNCTION_NAME }}:prod" \
-            --payload file://payload-prod.json \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{}' \
             --region "${{ env.AWS_REGION }}" \
             response-prod.json
           
